@@ -1,0 +1,2612 @@
+<!-- ============================================================
+     RDGScript.html
+     RD Route Design ACC / RDG
+     Client-Side Application Controller
+     Version: 4.0.2
+     ============================================================ -->
+
+<script>
+'use strict';
+
+/* ============================================================
+   RDG GLOBAL
+   ============================================================ */
+
+window.RDG = window.RDG || {};
+RDG.VERSION = '4.0.3';
+
+RDG.state = RDG.state || {};
+
+
+/* ============================================================
+   APPLICATION STATE
+   ============================================================ */
+
+RDG.state.app = RDG.state.app || {
+  initialized: false,
+  initializing: false,
+  loading: false,
+  loadingCount: 0,
+  online: false,
+  lastError: null
+};
+
+RDG.state.user = RDG.state.user || {
+  loggedIn: false,
+  id: null,
+  name: '',
+  email: '',
+  phone: '',
+  role: '',
+  token: null
+};
+
+RDG.state.company = RDG.state.company || {
+  id: null,
+  name: '',
+  code: '',
+  context: null
+};
+
+RDG.state.game = RDG.state.game || {
+  games: [],
+  currentGame: null,
+  score: 0
+};
+
+RDG.state.dashboard = RDG.state.dashboard || {
+  data: {},
+  loaded: false
+};
+
+
+/* ============================================================
+   DOM HELPERS
+   ============================================================ */
+
+RDG.$ = function(selector) {
+  return document.querySelector(selector);
+};
+
+RDG.$$ = function(selector) {
+  return Array.prototype.slice.call(
+    document.querySelectorAll(selector)
+  );
+};
+
+RDG.show = function(selector) {
+  var el = RDG.$(selector);
+  if (el) el.style.display = '';
+};
+
+RDG.hide = function(selector) {
+  var el = RDG.$(selector);
+  if (el) el.style.display = 'none';
+};
+
+RDG.setText = function(selector, value) {
+  var el = RDG.$(selector);
+
+  if (el) {
+    el.textContent = value == null ? '' : String(value);
+  }
+};
+
+RDG.setHTML = function(selector, value) {
+  var el = RDG.$(selector);
+
+  if (el) {
+    el.innerHTML = value == null ? '' : String(value);
+  }
+};
+
+
+/* ============================================================
+   SAFE STORAGE
+   ============================================================ */
+
+RDG.storage = {
+
+  prefix: 'RDG_',
+
+  set: function(key, value) {
+    try {
+      localStorage.setItem(
+        this.prefix + key,
+        JSON.stringify(value)
+      );
+
+      return true;
+
+    } catch (err) {
+
+      console.warn(
+        'RDG storage set error:',
+        err
+      );
+
+      return false;
+    }
+  },
+
+  get: function(key, fallback) {
+    try {
+
+      var value = localStorage.getItem(
+        this.prefix + key
+      );
+
+      if (value === null) {
+        return fallback;
+      }
+
+      return JSON.parse(value);
+
+    } catch (err) {
+
+      console.warn(
+        'RDG storage get error:',
+        err
+      );
+
+      return fallback;
+    }
+  },
+
+  remove: function(key) {
+
+    try {
+
+      localStorage.removeItem(
+        this.prefix + key
+      );
+
+    } catch (err) {
+
+      console.warn(
+        'RDG storage remove error:',
+        err
+      );
+    }
+  },
+
+  clearSession: function() {
+
+    this.remove('session');
+    this.remove('user');
+    this.remove('company');
+  }
+};
+
+
+/* ============================================================
+   NOTIFICATIONS
+   ============================================================ */
+
+RDG.notify = function(message, type) {
+
+  type = type || 'info';
+
+  var container =
+    document.getElementById('rdgToastContainer');
+
+  if (!container) {
+
+    container = document.createElement('div');
+
+    container.id = 'rdgToastContainer';
+
+    container.style.position = 'fixed';
+    container.style.right = '20px';
+    container.style.bottom = '20px';
+    container.style.zIndex = '99999';
+
+    document.body.appendChild(container);
+  }
+
+  var toast = document.createElement('div');
+
+  toast.textContent =
+    message == null ? '' : String(message);
+
+  toast.style.padding = '12px 16px';
+  toast.style.marginTop = '8px';
+  toast.style.borderRadius = '8px';
+  toast.style.background = '#222';
+  toast.style.color = '#fff';
+  toast.style.fontSize = '14px';
+  toast.style.boxShadow =
+    '0 5px 20px rgba(0,0,0,.25)';
+
+  if (type === 'success') {
+    toast.style.background = '#16803c';
+  }
+
+  if (type === 'error') {
+    toast.style.background = '#b42318';
+  }
+
+  if (type === 'warning') {
+    toast.style.background = '#9a6700';
+  }
+
+  container.appendChild(toast);
+
+  setTimeout(function() {
+
+    if (toast && toast.parentNode) {
+      toast.parentNode.removeChild(toast);
+    }
+
+  }, 4000);
+};
+
+
+/* ============================================================
+   LOADING STATE
+   ============================================================ */
+
+RDG.setLoading = function(value) {
+
+  if (value) {
+
+    RDG.state.app.loadingCount++;
+
+  } else {
+
+    RDG.state.app.loadingCount =
+      Math.max(
+        0,
+        RDG.state.app.loadingCount - 1
+      );
+  }
+
+  RDG.state.app.loading =
+    RDG.state.app.loadingCount > 0;
+
+  document.body.classList.toggle(
+    'rdg-loading',
+    RDG.state.app.loading
+  );
+
+  var loaders =
+    RDG.$$('.rdg-loading-indicator');
+
+  loaders.forEach(function(el) {
+
+    el.style.display =
+      RDG.state.app.loading ? '' : 'none';
+
+  });
+};
+
+
+/* ============================================================
+   SERVER AVAILABILITY
+   ============================================================ */
+
+RDG.server = {
+
+  available: function() {
+
+    return (
+      typeof google !== 'undefined' &&
+      google.script &&
+      typeof google.script.run !== 'undefined'
+    );
+  },
+
+
+  call: function(functionName, args, options) {
+
+    options = options || {};
+
+    args =
+      Array.isArray(args)
+        ? args
+        : [];
+
+    return new Promise(function(resolve, reject) {
+
+      if (!RDG.server.available()) {
+
+        var unavailable =
+          new Error(
+            'Google Apps Script server is not available.'
+          );
+
+        RDG.state.app.online = false;
+        RDG.state.app.lastError =
+          unavailable.message;
+
+        reject(unavailable);
+
+        return;
+      }
+
+      var runner;
+
+      try {
+
+        runner =
+          google.script.run
+            .withSuccessHandler(function(result) {
+
+              RDG.state.app.online = true;
+
+              if (
+                typeof options.success === 'function'
+              ) {
+
+                options.success(result);
+              }
+
+              resolve(result);
+            })
+            .withFailureHandler(function(error) {
+
+              RDG.state.app.online = false;
+
+              var message =
+                error && error.message
+                  ? error.message
+                  : String(
+                      error ||
+                      'Unknown server error'
+                    );
+
+              RDG.state.app.lastError =
+                message;
+
+              if (
+                typeof options.failure === 'function'
+              ) {
+
+                options.failure(error);
+              }
+
+              reject(error);
+            });
+
+          if (args.length === 0) {
+
+            runner[functionName]();
+
+          } else if (args.length === 1) {
+
+            runner[functionName](args[0]);
+
+          } else if (args.length === 2) {
+
+            runner[functionName](
+              args[0],
+              args[1]
+            );
+
+          } else if (args.length === 3) {
+
+            runner[functionName](
+              args[0],
+              args[1],
+              args[2]
+            );
+
+          } else {
+
+            throw new Error(
+              'Unsupported number of server arguments.'
+            );
+          }
+
+      } catch (err) {
+
+        RDG.state.app.online = false;
+        RDG.state.app.lastError =
+          err.message || String(err);
+
+        reject(err);
+      }
+    });
+  }
+};
+
+
+/* ============================================================
+   RESPONSE NORMALIZATION
+   ============================================================ */
+
+RDG.normalizeResponse = function(response) {
+
+  if (response == null) {
+
+    return {
+      success: true,
+      data: null,
+      message: ''
+    };
+  }
+
+  if (typeof response !== 'object') {
+
+    return {
+      success: true,
+      data: response,
+      message: ''
+    };
+  }
+
+  if (
+    Object.prototype.hasOwnProperty.call(
+      response,
+      'success'
+    )
+  ) {
+
+    return {
+      success: !!response.success,
+      data: response.data,
+      message: response.message || '',
+      error: response.error || null,
+      code: response.code || null
+    };
+  }
+
+  if (
+    Object.prototype.hasOwnProperty.call(
+      response,
+      'ok'
+    )
+  ) {
+
+    return {
+      success: !!response.ok,
+      data: response.data,
+      message: response.message || '',
+      error: response.error || null,
+      code: response.code || null
+    };
+  }
+
+  return {
+    success: true,
+    data: response,
+    message: ''
+  };
+};
+
+
+/* ============================================================
+   API ACTION CLASSIFICATION
+   ============================================================ */
+
+RDG.api = {
+
+  publicActions: {
+    ping: true,
+    pingRDGServer: true,
+    login: true,
+    signup: true,
+    phoneLogin: true,
+    phone_login: true
+  },
+
+
+  isPublicAction: function(action) {
+
+    if (!action) {
+      return false;
+    }
+
+    return !!this.publicActions[
+      String(action).toLowerCase()
+    ];
+  },
+
+
+  requiresAuthentication: function(action) {
+
+    return !this.isPublicAction(action);
+  },
+
+
+  getToken: function() {
+
+    return (
+      RDG.state.user &&
+      RDG.state.user.token
+        ? RDG.state.user.token
+        : null
+    );
+  },
+
+
+  call: async function(action, payload) {
+
+    payload = payload || {};
+
+    action =
+      String(action || '').trim();
+
+    if (!action) {
+
+      throw new Error(
+        'RDG API action is required.'
+      );
+    }
+
+
+    /*
+     * ----------------------------------------------------------
+     * Authentication token
+     * ----------------------------------------------------------
+     *
+     * Protected requests automatically receive the
+     * current session token.
+     */
+
+    var token = this.getToken();
+
+    if (
+      this.requiresAuthentication(action)
+    ) {
+
+      if (!token) {
+
+        var authError =
+          new Error(
+            'Authentication required.'
+          );
+
+        authError.code =
+          'AUTH_REQUIRED';
+
+        throw authError;
+      }
+
+      payload =
+        Object.assign(
+          {},
+          payload,
+          {
+            token: token,
+            sessionToken: token
+          }
+        );
+    }
+
+
+    /*
+     * ----------------------------------------------------------
+     * Official server route
+     * ----------------------------------------------------------
+     *
+     * Only rdgApi is used.
+     *
+     * No RDGApi/serverApi fallback is used.
+     */
+
+    var result =
+      await RDG.server.call(
+        'rdgApi',
+        [action, payload]
+      );
+
+    var normalized =
+      RDG.normalizeResponse(result);
+
+
+    /*
+     * ----------------------------------------------------------
+     * Automatic invalid-session handling
+     * ----------------------------------------------------------
+     */
+
+    if (
+      !normalized.success &&
+      this.requiresAuthentication(action)
+    ) {
+
+      var errorCode =
+        normalized.code ||
+        (
+          normalized.error &&
+          normalized.error.code
+        );
+
+      var message =
+        String(
+          normalized.message || ''
+        ).toLowerCase();
+
+      var authFailure =
+        errorCode === 'AUTH_REQUIRED' ||
+        errorCode === 'AUTH_INVALID' ||
+        errorCode === 'SESSION_EXPIRED' ||
+        errorCode === 'INVALID_SESSION' ||
+        message.indexOf('authentication') !== -1 ||
+        message.indexOf('session expired') !== -1 ||
+        message.indexOf('invalid session') !== -1 ||
+        message.indexOf('unauthorized') !== -1;
+
+      if (authFailure) {
+
+        RDG.session.clear();
+
+        RDG.renderAuthState();
+        RDG.renderCompany();
+
+        RDG.notify(
+          'Your session has expired. Please login again.',
+          'warning'
+        );
+      }
+    }
+
+    return normalized;
+  }
+};
+
+
+/* ============================================================
+   SERVER PING
+   ============================================================ */
+
+RDG.ping = async function() {
+
+  try {
+
+    var result =
+      await RDG.server.call(
+        'pingRDGServer'
+      );
+
+    RDG.state.app.online = true;
+
+    return {
+      success: true,
+      data: result
+    };
+
+  } catch (err) {
+
+    RDG.state.app.online = false;
+
+    return {
+      success: false,
+      error: err
+    };
+  }
+};
+
+
+/* ============================================================
+   SESSION STORAGE
+   ============================================================ */
+
+RDG.session = {
+
+  save: function() {
+
+    var userToStore = {
+      id: RDG.state.user.id,
+      name: RDG.state.user.name,
+      email: RDG.state.user.email,
+      phone: RDG.state.user.phone,
+      role: RDG.state.user.role,
+      token: RDG.state.user.token
+    };
+
+    RDG.storage.set(
+      'session',
+      userToStore
+    );
+
+    RDG.storage.set(
+      'user',
+      userToStore
+    );
+
+    RDG.storage.set(
+      'company',
+      RDG.state.company
+    );
+  },
+
+
+  restore: function() {
+
+    var storedUser =
+      RDG.storage.get(
+        'user',
+        null
+      );
+
+    var storedSession =
+      RDG.storage.get(
+        'session',
+        null
+      );
+
+    var storedCompany =
+      RDG.storage.get(
+        'company',
+        null
+      );
+
+
+    /*
+     * Prefer session object when available.
+     */
+
+    var source =
+      storedSession ||
+      storedUser ||
+      null;
+
+
+    if (source) {
+
+      RDG.state.user.id =
+        source.id ||
+        source.userId ||
+        null;
+
+      RDG.state.user.name =
+        source.name ||
+        source.fullName ||
+        source.displayName ||
+        '';
+
+      RDG.state.user.email =
+        source.email ||
+        '';
+
+      RDG.state.user.phone =
+        source.phone ||
+        '';
+
+      RDG.state.user.role =
+        source.role ||
+        '';
+
+      RDG.state.user.token =
+        source.token ||
+        source.sessionToken ||
+        null;
+    }
+
+
+    if (storedCompany) {
+
+      RDG.state.company = Object.assign(
+        {},
+        RDG.state.company,
+        storedCompany
+      );
+    }
+
+
+    /*
+     * IMPORTANT:
+     *
+     * A stored ID/email/phone does NOT make the
+     * user authenticated.
+     *
+     * Authentication requires a token that will
+     * subsequently be validated by the server.
+     */
+
+    RDG.state.user.loggedIn =
+      !!RDG.state.user.token;
+
+    return RDG.state.user;
+  },
+
+
+  clear: function() {
+
+    RDG.state.user = {
+      loggedIn: false,
+      id: null,
+      name: '',
+      email: '',
+      phone: '',
+      role: '',
+      token: null
+    };
+
+    RDG.state.company = {
+      id: null,
+      name: '',
+      code: '',
+      context: null
+    };
+
+    RDG.state.dashboard = {
+      data: {},
+      loaded: false
+    };
+
+    RDG.state.game = {
+      games: [],
+      currentGame: null,
+      score: 0
+    };
+
+    RDG.storage.clearSession();
+  }
+};
+
+
+/* ============================================================
+   AUTHENTICATION STATUS
+   ============================================================ */
+
+RDG.auth = {
+
+  isAuthenticated: function() {
+
+    return (
+      !!RDG.state.user.loggedIn &&
+      !!RDG.state.user.token
+    );
+  },
+
+
+  /* ----------------------------------------------------------
+     LOGIN
+     ---------------------------------------------------------- */
+
+  login: async function(credentials) {
+
+    credentials = credentials || {};
+
+    RDG.setLoading(true);
+
+    try {
+
+      var result =
+        await RDG.api.call(
+          'login',
+          credentials
+        );
+
+
+      if (!result.success) {
+
+        throw new Error(
+          result.message ||
+          'Login failed.'
+        );
+      }
+
+
+      RDG.applyAuthResult(
+        result.data || result
+      );
+
+
+      RDG.notify(
+        'Login successful.',
+        'success'
+      );
+
+
+      return result;
+
+    } catch (err) {
+
+      RDG.notify(
+        err.message ||
+        'Login failed.',
+        'error'
+      );
+
+      throw err;
+
+    } finally {
+
+      RDG.setLoading(false);
+    }
+  },
+
+
+  /* ----------------------------------------------------------
+     SIGNUP
+     ---------------------------------------------------------- */
+
+  signup: async function(data) {
+
+    data = data || {};
+
+    RDG.setLoading(true);
+
+    try {
+
+      var result =
+        await RDG.api.call(
+          'signup',
+          data
+        );
+
+
+      if (!result.success) {
+
+        throw new Error(
+          result.message ||
+          'Signup failed.'
+        );
+      }
+
+
+      /*
+       * Signup does not automatically mark the user
+       * authenticated unless the server explicitly
+       * returns a session token.
+       */
+
+      var signupData =
+        result.data || {};
+
+      if (
+        signupData.token ||
+        signupData.sessionToken
+      ) {
+
+        RDG.applyAuthResult(
+          signupData
+        );
+      }
+
+
+      RDG.notify(
+        'Account created successfully.',
+        'success'
+      );
+
+
+      return result;
+
+    } catch (err) {
+
+      RDG.notify(
+        err.message ||
+        'Signup failed.',
+        'error'
+      );
+
+      throw err;
+
+    } finally {
+
+      RDG.setLoading(false);
+    }
+  },
+
+
+  /* ----------------------------------------------------------
+     PHONE LOGIN
+     ---------------------------------------------------------- */
+
+  phoneLogin: async function(
+    phone,
+    password
+  ) {
+
+    return RDG.auth.login({
+      phone: phone,
+      password: password,
+      loginType: 'phone'
+    });
+  },
+
+
+  /* ----------------------------------------------------------
+     GOOGLE LOGIN
+     ---------------------------------------------------------- */
+
+  googleLogin: async function() {
+
+    RDG.setLoading(true);
+
+    try {
+
+      var raw =
+        await RDG.server.call(
+          'startGoogleLogin'
+        );
+
+      var result =
+        RDG.normalizeResponse(raw);
+
+
+      var url =
+        result &&
+        result.data &&
+        result.data.url
+          ? result.data.url
+          : raw &&
+            raw.url
+            ? raw.url
+            : null;
+
+
+      if (url) {
+
+        window.open(
+          url,
+          '_blank',
+          'noopener,noreferrer'
+        );
+
+      } else {
+
+        throw new Error(
+          result.message ||
+          'Google login URL was not returned.'
+        );
+      }
+
+
+      return result;
+
+    } catch (err) {
+
+      RDG.notify(
+        err.message ||
+        'Google login could not be started.',
+        'error'
+      );
+
+      throw err;
+
+    } finally {
+
+      RDG.setLoading(false);
+    }
+  },
+
+
+  /* ----------------------------------------------------------
+     SESSION VALIDATION
+     ---------------------------------------------------------- */
+
+  validateSession: async function() {
+
+    var token =
+      RDG.state.user.token;
+
+    if (!token) {
+
+      RDG.state.user.loggedIn = false;
+
+      return {
+        success: false,
+        authenticated: false,
+        message: 'No session token.'
+      };
+    }
+
+
+    try {
+
+      var result =
+        await RDG.api.call(
+          'getSession',
+          {
+            token: token,
+            sessionToken: token
+          }
+        );
+
+
+      if (!result.success) {
+
+        RDG.session.clear();
+
+        RDG.renderAuthState();
+        RDG.renderCompany();
+
+        return {
+          success: false,
+          authenticated: false,
+          message:
+            result.message ||
+            'Session is invalid.'
+        };
+      }
+
+
+      var data =
+        result.data || {};
+
+
+      /*
+       * Server may return:
+       *
+       * {
+       *   user: {...},
+       *   company: {...},
+       *   token: "..."
+       * }
+       */
+
+      if (
+        data.user ||
+        data.account ||
+        data.profile ||
+        data.token ||
+        data.sessionToken
+      ) {
+
+        RDG.applyAuthResult(
+          Object.assign(
+            {},
+            data,
+            {
+              token:
+                data.token ||
+                data.sessionToken ||
+                token
+            }
+          )
+        );
+
+      } else {
+
+        RDG.state.user.loggedIn = true;
+        RDG.state.user.token = token;
+        RDG.session.save();
+        RDG.renderAuthState();
+      }
+
+
+      return {
+        success: true,
+        authenticated: true,
+        data: data
+      };
+
+    } catch (err) {
+
+      console.warn(
+        'Session validation failed:',
+        err
+      );
+
+      RDG.session.clear();
+
+      RDG.renderAuthState();
+      RDG.renderCompany();
+
+      return {
+        success: false,
+        authenticated: false,
+        error: err
+      };
+    }
+  },
+
+
+  /* ----------------------------------------------------------
+     LOGOUT
+     ---------------------------------------------------------- */
+
+  logout: async function() {
+
+    RDG.setLoading(true);
+
+    try {
+
+      /*
+       * Keep the direct server compatibility call.
+       *
+       * Local session clearing is authoritative on this
+       * client because the current server logout bridge
+       * does not receive the browser token.
+       */
+
+      try {
+
+        await RDG.server.call(
+          'logoutRDGUser'
+        );
+
+      } catch (err) {
+
+        console.warn(
+          'Server logout unavailable:',
+          err
+        );
+      }
+
+
+      RDG.session.clear();
+
+      RDG.renderAuthState();
+      RDG.renderCompany();
+
+
+      RDG.notify(
+        'Logged out successfully.',
+        'success'
+      );
+
+
+      return {
+        success: true
+      };
+
+    } finally {
+
+      RDG.setLoading(false);
+    }
+  }
+};
+
+
+/* ============================================================
+   APPLY AUTHENTICATION RESULT
+   ============================================================ */
+
+RDG.applyAuthResult = function(data) {
+
+  data = data || {};
+
+  var user =
+    data.user ||
+    data.account ||
+    data.profile ||
+    data;
+
+
+  var token =
+    data.token ||
+    data.sessionToken ||
+    user.token ||
+    user.sessionToken ||
+    null;
+
+
+  RDG.state.user.id =
+    user.id ||
+    user.userId ||
+    user.uid ||
+    null;
+
+  RDG.state.user.name =
+    user.name ||
+    user.fullName ||
+    user.displayName ||
+    '';
+
+  RDG.state.user.email =
+    user.email ||
+    '';
+
+  RDG.state.user.phone =
+    user.phone ||
+    '';
+
+  RDG.state.user.role =
+    user.role ||
+    '';
+
+  RDG.state.user.token =
+    token;
+
+  RDG.state.user.loggedIn =
+    !!token;
+
+
+  if (data.company) {
+
+    RDG.setCompany(
+      data.company
+    );
+
+  } else if (user.company) {
+
+    RDG.setCompany(
+      user.company
+    );
+  }
+
+
+  RDG.session.save();
+
+  RDG.renderAuthState();
+  RDG.renderCompany();
+
+  return RDG.state.user;
+};
+
+
+/* ============================================================
+   COMPANY CONTEXT
+   ============================================================ */
+
+RDG.setCompany = function(company) {
+
+  company = company || {};
+
+  RDG.state.company = {
+
+    id:
+      company.id ||
+      company.companyId ||
+      null,
+
+    name:
+      company.name ||
+      company.companyName ||
+      '',
+
+    code:
+      company.code ||
+      company.companyCode ||
+      '',
+
+    context:
+      company
+  };
+
+
+  RDG.storage.set(
+    'company',
+    RDG.state.company
+  );
+
+  RDG.renderCompany();
+
+  return RDG.state.company;
+};
+
+
+RDG.selectCompany = async function(company) {
+
+  if (!company) {
+
+    throw new Error(
+      'Company information is required.'
+    );
+  }
+
+
+  RDG.setCompany(company);
+
+
+  try {
+
+    var result =
+      await RDG.api.call(
+        'setCompanyContext',
+        {
+          companyId:
+            RDG.state.company.id,
+
+          companyCode:
+            RDG.state.company.code
+        }
+      );
+
+
+    if (!result.success) {
+
+      throw new Error(
+        result.message ||
+        'Company context could not be updated.'
+      );
+    }
+
+  } catch (err) {
+
+    console.warn(
+      'Server company context error:',
+      err
+    );
+
+    throw err;
+  }
+
+
+  RDG.notify(
+    'Company selected.',
+    'success'
+  );
+
+
+  return RDG.state.company;
+};
+
+
+/* ============================================================
+   DASHBOARD
+   ============================================================ */
+
+RDG.dashboard = {
+
+  load: async function() {
+
+    if (!RDG.auth.isAuthenticated()) {
+
+      return null;
+    }
+
+
+    RDG.setLoading(true);
+
+    try {
+
+      var result =
+        await RDG.api.call(
+          'dashboard',
+          {
+            userId:
+              RDG.state.user.id,
+
+            companyId:
+              RDG.state.company.id
+          }
+        );
+
+
+      if (!result.success) {
+
+        throw new Error(
+          result.message ||
+          'Dashboard loading failed.'
+        );
+      }
+
+
+      RDG.state.dashboard.data =
+        result.data || {};
+
+      RDG.state.dashboard.loaded =
+        true;
+
+
+      RDG.renderDashboard(
+        RDG.state.dashboard.data
+      );
+
+
+      return result;
+
+    } catch (err) {
+
+      console.error(
+        'Dashboard error:',
+        err
+      );
+
+      RDG.state.dashboard.loaded =
+        false;
+
+      RDG.notify(
+        err.message ||
+        'Dashboard could not be loaded.',
+        'error'
+      );
+
+      throw err;
+
+    } finally {
+
+      RDG.setLoading(false);
+    }
+  }
+};
+
+
+/* ============================================================
+   GAMES
+   ============================================================ */
+
+RDG.games = {
+
+  load: async function() {
+
+    if (!RDG.auth.isAuthenticated()) {
+
+      return [];
+    }
+
+
+    try {
+
+      var result =
+        await RDG.api.call(
+          'games',
+          {
+            companyId:
+              RDG.state.company.id,
+
+            userId:
+              RDG.state.user.id
+          }
+        );
+
+
+      if (!result.success) {
+
+        throw new Error(
+          result.message ||
+          'Games could not be loaded.'
+        );
+      }
+
+
+      var data =
+        result.data || {};
+
+
+      var games =
+        Array.isArray(data.games)
+          ? data.games
+          : Array.isArray(data)
+            ? data
+            : [];
+
+
+      RDG.state.game.games =
+        games;
+
+
+      RDG.renderGames(
+        games
+      );
+
+
+      return games;
+
+    } catch (err) {
+
+      console.warn(
+        'Game loading error:',
+        err
+      );
+
+      return [];
+    }
+  }
+};
+
+
+/* ============================================================
+   UI — AUTH STATE
+   ============================================================ */
+
+RDG.renderAuthState = function() {
+
+  var loggedIn =
+    RDG.auth.isAuthenticated();
+
+
+  RDG.$$('.rdg-authenticated')
+    .forEach(function(el) {
+
+      el.style.display =
+        loggedIn
+          ? ''
+          : 'none';
+
+    });
+
+
+  RDG.$$('.rdg-unauthenticated')
+    .forEach(function(el) {
+
+      el.style.display =
+        loggedIn
+          ? 'none'
+          : '';
+
+    });
+
+
+  RDG.setText(
+    '[data-rdg-user-name]',
+    RDG.state.user.name
+  );
+
+  RDG.setText(
+    '[data-rdg-user-email]',
+    RDG.state.user.email
+  );
+
+  RDG.setText(
+    '[data-rdg-user-phone]',
+    RDG.state.user.phone
+  );
+
+  RDG.setText(
+    '[data-rdg-user-role]',
+    RDG.state.user.role
+  );
+};
+
+
+/* ============================================================
+   UI — COMPANY
+   ============================================================ */
+
+RDG.renderCompany = function() {
+
+  RDG.setText(
+    '[data-rdg-company-name]',
+    RDG.state.company.name
+  );
+
+  RDG.setText(
+    '[data-rdg-company-code]',
+    RDG.state.company.code
+  );
+};
+
+
+/* ============================================================
+   UI — DASHBOARD
+   ============================================================ */
+
+RDG.renderDashboard = function(data) {
+
+  data = data || {};
+
+  Object.keys(data)
+    .forEach(function(key) {
+
+      var selectors = [
+
+        '[data-rdg-dashboard="' +
+          key +
+        '"]',
+
+        '[data-dashboard="' +
+          key +
+        '"]'
+      ];
+
+
+      selectors.forEach(function(selector) {
+
+        var el =
+          RDG.$(selector);
+
+        if (el) {
+
+          el.textContent =
+            data[key] == null
+              ? ''
+              : String(data[key]);
+        }
+      });
+    });
+};
+
+
+/* ============================================================
+   UI — GAMES
+   ============================================================ */
+
+RDG.renderGames = function(games) {
+
+  var container =
+    RDG.$('[data-rdg-games]');
+
+
+  if (!container) {
+    return;
+  }
+
+
+  container.innerHTML = '';
+
+
+  games.forEach(function(game) {
+
+    var item =
+      document.createElement('div');
+
+    item.className =
+      'rdg-game-item';
+
+
+    item.textContent =
+      game.name ||
+      game.title ||
+      game.gameName ||
+      'Game';
+
+
+    item.dataset.gameId =
+      game.id ||
+      game.gameId ||
+      '';
+
+
+    container.appendChild(item);
+  });
+};
+
+
+/* ============================================================
+   EVENT BINDING
+   ============================================================ */
+
+RDG.bindEvents = function() {
+
+  /*
+   * ----------------------------------------------------------
+   * Email Login
+   * ----------------------------------------------------------
+   */
+
+  RDG.$$('.rdg-login-btn')
+    .forEach(function(button) {
+
+      if (button.dataset.rdgBound === '1') {
+        return;
+      }
+
+      button.dataset.rdgBound = '1';
+
+
+      button.addEventListener(
+        'click',
+        function() {
+
+          var email =
+            RDG.$('[name="email"]');
+
+          var password =
+            RDG.$('[name="password"]');
+
+
+          RDG.auth.login({
+
+            email:
+              email
+                ? email.value.trim()
+                : '',
+
+            password:
+              password
+                ? password.value
+                : '',
+
+            loginType:
+              'email'
+          });
+        }
+      );
+    });
+
+
+  /*
+   * ----------------------------------------------------------
+   * Phone Login
+   * ----------------------------------------------------------
+   */
+
+  RDG.$$('.rdg-phone-login-btn')
+    .forEach(function(button) {
+
+      if (button.dataset.rdgBound === '1') {
+        return;
+      }
+
+      button.dataset.rdgBound = '1';
+
+
+      button.addEventListener(
+        'click',
+        function() {
+
+          var phone =
+            RDG.$('[name="phone"]');
+
+          var password =
+            RDG.$('[name="password"]');
+
+
+          RDG.auth.phoneLogin(
+
+            phone
+              ? phone.value.trim()
+              : '',
+
+            password
+              ? password.value
+              : ''
+          );
+        }
+      );
+    });
+
+
+  /*
+   * ----------------------------------------------------------
+   * Google Login
+   * ----------------------------------------------------------
+   */
+
+  RDG.$$('.rdg-google-login-btn')
+    .forEach(function(button) {
+
+      if (button.dataset.rdgBound === '1') {
+        return;
+      }
+
+      button.dataset.rdgBound = '1';
+
+
+      button.addEventListener(
+        'click',
+        function() {
+
+          RDG.auth.googleLogin();
+
+        }
+      );
+    });
+
+
+  /*
+   * ----------------------------------------------------------
+   * Logout
+   * ----------------------------------------------------------
+   */
+
+  RDG.$$('.rdg-logout-btn')
+    .forEach(function(button) {
+
+      if (button.dataset.rdgBound === '1') {
+        return;
+      }
+
+      button.dataset.rdgBound = '1';
+
+
+      button.addEventListener(
+        'click',
+        function() {
+
+          RDG.auth.logout();
+
+        }
+      );
+    });
+
+
+  /*
+   * ----------------------------------------------------------
+   * Dashboard Refresh
+   * ----------------------------------------------------------
+   */
+
+  RDG.$$('.rdg-dashboard-refresh')
+    .forEach(function(button) {
+
+      if (button.dataset.rdgBound === '1') {
+        return;
+      }
+
+      button.dataset.rdgBound = '1';
+
+
+      button.addEventListener(
+        'click',
+        function() {
+
+          RDG.dashboard.load();
+
+        }
+      );
+    });
+};
+
+
+/* ============================================================
+   APPLICATION INITIALIZATION
+   ============================================================ */
+
+RDG.init = async function() {
+
+  /*
+   * Prevent duplicate initialization.
+   */
+
+  if (
+    RDG.state.app.initialized ||
+    RDG.state.app.initializing
+  ) {
+
+    return;
+  }
+
+
+  RDG.state.app.initializing =
+    true;
+
+
+  console.log(
+    'RDG initializing — version',
+    RDG.VERSION
+  );
+
+
+  try {
+
+    /*
+     * --------------------------------------------------------
+     * 1. Restore provisional local session
+     * --------------------------------------------------------
+     */
+
+    RDG.session.restore();
+
+    RDG.renderAuthState();
+    RDG.renderCompany();
+
+
+    /*
+     * --------------------------------------------------------
+     * 2. Bind UI events
+     * --------------------------------------------------------
+     */
+
+    RDG.bindEvents();
+
+
+    /*
+     * --------------------------------------------------------
+     * 3. Check server connection
+     * --------------------------------------------------------
+     */
+
+    var ping =
+      await RDG.ping();
+
+
+    if (ping.success) {
+
+      console.log(
+        'RDG server connection: ONLINE'
+      );
+
+    } else {
+
+      console.warn(
+        'RDG server connection: OFFLINE'
+      );
+    }
+
+
+    /*
+     * --------------------------------------------------------
+     * 4. Validate stored session
+     * --------------------------------------------------------
+     */
+
+    if (
+      RDG.state.user.token
+    ) {
+
+      var sessionResult =
+        await RDG.auth.validateSession();
+
+
+      if (
+        sessionResult.success &&
+        sessionResult.authenticated
+      ) {
+
+        console.log(
+          'RDG session: VALID'
+        );
+
+
+        /*
+         * ----------------------------------------------------
+         * 5. Load authenticated application data
+         * ----------------------------------------------------
+         */
+
+        try {
+
+          await RDG.dashboard.load();
+
+        } catch (err) {
+
+          console.warn(
+            'Initial dashboard load failed:',
+            err
+          );
+        }
+
+
+        try {
+
+          await RDG.games.load();
+
+        } catch (err) {
+
+          console.warn(
+            'Initial games load failed:',
+            err
+          );
+        }
+
+      } else {
+
+        console.warn(
+          'RDG session: INVALID'
+        );
+      }
+    }
+
+
+    /*
+     * --------------------------------------------------------
+     * Initialization completed
+     * --------------------------------------------------------
+     */
+
+    RDG.state.app.initialized =
+      true;
+
+
+    console.log(
+      'RDG initialization complete.'
+    );
+
+
+  } catch (err) {
+
+    RDG.state.app.lastError =
+      err && err.message
+        ? err.message
+        : String(err);
+
+
+    console.error(
+      'RDG initialization error:',
+      err
+    );
+
+
+  } finally {
+
+    RDG.state.app.initializing =
+      false;
+  }
+};
+
+
+/* ============================================================
+   DOM READY
+   ============================================================ */
+
+if (
+  document.readyState ===
+  'loading'
+) {
+
+  document.addEventListener(
+    'DOMContentLoaded',
+    RDG.init
+  );
+
+} else {
+
+  RDG.init();
+}
+
+
+/* ============================================================
+   GLOBAL COMPATIBILITY FUNCTIONS
+   ============================================================ */
+
+window.RDGLogin =
+  function(data) {
+
+    return RDG.auth.login(data);
+  };
+
+
+window.RDGSignup =
+  function(data) {
+
+    return RDG.auth.signup(data);
+  };
+
+
+window.RDGPhoneLogin =
+  function(phone, password) {
+
+    return RDG.auth.phoneLogin(
+      phone,
+      password
+    );
+  };
+
+
+window.RDGGoogleLogin =
+  function() {
+
+    return RDG.auth.googleLogin();
+  };
+
+
+window.RDGLogout =
+  function() {
+
+    return RDG.auth.logout();
+  };
+
+
+window.RDGLoadDashboard =
+  function() {
+
+    return RDG.dashboard.load();
+  };
+
+
+window.RDGLoadGames =
+  function() {
+
+    return RDG.games.load();
+  };
+
+
+window.RDGValidateSession =
+  function() {
+
+    return RDG.auth.validateSession();
+  };
+
+
+/* ============================================================
+   DEBUG INFORMATION
+   ============================================================ */
+
+window.RDG_DEBUG = function() {
+
+  var debugState = {
+
+    version:
+      RDG.VERSION,
+
+    initialized:
+      RDG.state.app.initialized,
+
+    initializing:
+      RDG.state.app.initializing,
+
+    loading:
+      RDG.state.app.loading,
+
+    loadingCount:
+      RDG.state.app.loadingCount,
+
+    serverOnline:
+      RDG.state.app.online,
+
+    loggedIn:
+      RDG.auth.isAuthenticated(),
+
+    userId:
+      RDG.state.user.id,
+
+    userName:
+      RDG.state.user.name,
+
+    userEmail:
+      RDG.state.user.email,
+
+    companyId:
+      RDG.state.company.id,
+
+    companyName:
+      RDG.state.company.name,
+
+    games:
+      RDG.state.game.games.length,
+
+    dashboardLoaded:
+      RDG.state.dashboard.loaded,
+
+    lastError:
+      RDG.state.app.lastError
+  };
+
+
+  console.table(
+    debugState
+  );
+
+
+  return RDG.state;
+};
+
+
+/* ============================================================
+   GAME LAUNCH BRIDGE
+   RDGScript.html v4.0.3
+
+   Purpose:
+   - Preserve the existing authentication/session flow.
+   - Bridge the authenticated Games UI to the existing game launcher.
+   - Never invent a game URL or route.
+   - Prefer an already-loaded Game300 launcher when available.
+   - Otherwise use a URL/route already supplied by the canonical
+     game registry response.
+   ============================================================ */
+
+RDG.gameLaunch = RDG.gameLaunch || {
+
+  normalize: function(game) {
+
+    game = game || {};
+
+    return {
+      original: game,
+      gameId:
+        game.gameId ||
+        game.id ||
+        game.GameID ||
+        game['Game ID'] ||
+        '',
+      gameNo:
+        game.gameNo ||
+        game.no ||
+        game.gameNumber ||
+        game['Game No'] ||
+        '',
+      gameName:
+        game.gameName ||
+        game.name ||
+        game.title ||
+        game.GameName ||
+        'Game',
+      category:
+        game.category ||
+        game.gameType ||
+        game.code ||
+        '',
+      mode:
+        String(game.mode || 'ONLINE').toUpperCase(),
+      status:
+        String(game.status || '').toUpperCase(),
+      linked:
+        game.linked === true ||
+        String(game.linked).toLowerCase() === 'true',
+      playable:
+        game.playable === true ||
+        String(game.playable).toLowerCase() === 'true',
+      engine:
+        game.engine ||
+        game.gameEngine ||
+        '',
+      route:
+        game.route ||
+        game.Route ||
+        game['Game Route'] ||
+        '',
+      url:
+        game.url ||
+        game.URL ||
+        game['Game URL'] ||
+        '',
+      stake:
+        Number(game.stake || game.Stake || 0) || 0,
+      minPlayers:
+        Number(game.minPlayers || game['Min Players'] || 0) || 0,
+      maxPlayers:
+        Number(game.maxPlayers || game['Max Players'] || 0) || 0
+    };
+  },
+
+
+  validate: function(game) {
+
+    var normalized =
+      this.normalize(game);
+
+    if (!normalized.gameId && !normalized.gameNo) {
+      throw new Error('Game ID is required to launch a game.');
+    }
+
+    if (
+      normalized.status &&
+      normalized.status !== 'ACTIVE'
+    ) {
+      throw new Error(
+        'This game is not ACTIVE and cannot be launched.'
+      );
+    }
+
+    if (!normalized.linked) {
+      throw new Error(
+        'This game is not linked to the canonical game system.'
+      );
+    }
+
+    if (!normalized.playable) {
+      throw new Error(
+        'This game is not marked PLAYABLE yet.'
+      );
+    }
+
+    return normalized;
+  },
+
+
+  open: function(game) {
+
+    if (!RDG.auth.isAuthenticated()) {
+      RDG.notify(
+        'Please login before launching a game.',
+        'warning'
+      );
+
+      return {
+        success: false,
+        code: 'AUTH_REQUIRED'
+      };
+    }
+
+    var normalized;
+
+    try {
+      normalized = this.validate(game);
+    } catch (err) {
+      RDG.notify(
+        err.message || 'Game cannot be launched.',
+        'error'
+      );
+
+      return {
+        success: false,
+        code: 'GAME_NOT_LAUNCHABLE',
+        error: err.message || String(err)
+      };
+    }
+
+
+    /* ----------------------------------------------------------
+       1. Existing Game300 launcher already loaded in this page
+       ---------------------------------------------------------- */
+
+    if (
+      window.Game300 &&
+      typeof window.Game300.startSelectedGame === 'function'
+    ) {
+      try {
+        window.Game300.selectedGame = normalized.original;
+        return window.Game300.startSelectedGame();
+      } catch (err) {
+        console.error(
+          'Game300 launch bridge error:',
+          err
+        );
+
+        RDG.notify(
+          err.message || 'Game300 could not be started.',
+          'error'
+        );
+
+        return {
+          success: false,
+          code: 'GAME300_LAUNCH_ERROR',
+          error: err.message || String(err)
+        };
+      }
+    }
+
+
+    /* ----------------------------------------------------------
+       2. Existing direct launcher function, if already loaded
+       ---------------------------------------------------------- */
+
+    if (
+      typeof window.startSelectedGame === 'function'
+    ) {
+      try {
+        return window.startSelectedGame(
+          normalized.original
+        );
+      } catch (err) {
+        console.error(
+          'Direct game launch bridge error:',
+          err
+        );
+
+        RDG.notify(
+          err.message || 'Game could not be started.',
+          'error'
+        );
+
+        return {
+          success: false,
+          code: 'DIRECT_LAUNCH_ERROR',
+          error: err.message || String(err)
+        };
+      }
+    }
+
+
+    /* ----------------------------------------------------------
+       3. Use a URL that the canonical game registry already gave us
+       ---------------------------------------------------------- */
+
+    if (normalized.url) {
+      window.location.href = String(normalized.url);
+
+      return {
+        success: true,
+        launched: true,
+        method: 'REGISTERED_URL',
+        gameId: normalized.gameId,
+        gameNo: normalized.gameNo,
+        url: normalized.url
+      };
+    }
+
+
+    /* ----------------------------------------------------------
+       4. Use a route only when the registry explicitly supplied it
+       ---------------------------------------------------------- */
+
+    if (normalized.route) {
+      var route = String(normalized.route).trim();
+
+      if (route) {
+        window.location.href = route;
+
+        return {
+          success: true,
+          launched: true,
+          method: 'REGISTERED_ROUTE',
+          gameId: normalized.gameId,
+          gameNo: normalized.gameNo,
+          route: route
+        };
+      }
+    }
+
+
+    /* ----------------------------------------------------------
+       No verified launcher/URL/route exists yet.
+       Do not fabricate one.
+       ---------------------------------------------------------- */
+
+    RDG.notify(
+      'Game is registered, but no launch page or route is registered yet.',
+      'warning'
+    );
+
+    return {
+      success: false,
+      code: 'GAME_ROUTE_NOT_REGISTERED',
+      gameId: normalized.gameId,
+      gameNo: normalized.gameNo,
+      gameName: normalized.gameName,
+      engine: normalized.engine
+    };
+  },
+
+
+  select: function(game) {
+    var normalized = this.normalize(game);
+
+    RDG.state.game.currentGame =
+      normalized.original;
+
+    return normalized.original;
+  },
+
+
+  openCurrentGame: function() {
+    return this.open(
+      RDG.state.game.currentGame
+    );
+  },
+
+
+  openById: function(gameId) {
+    var id = String(gameId || '').trim();
+
+    var game =
+      RDG.state.game.games.find(function(item) {
+        var candidate =
+          item && (
+            item.gameId ||
+            item.id ||
+            item.GameID ||
+            item['Game ID']
+          );
+
+        return String(candidate || '').trim() === id;
+      });
+
+    if (!game) {
+      throw new Error(
+        'Game was not found in the current authenticated game list.'
+      );
+    }
+
+    RDG.state.game.currentGame = game;
+
+    return this.open(game);
+  },
+
+
+  openGame300: function(game) {
+    return this.open(game);
+  },
+
+
+  debug: function() {
+    var current =
+      RDG.state.game.currentGame;
+
+    var result = {
+      version: RDG.VERSION,
+      authenticated:
+        RDG.auth.isAuthenticated(),
+      userId:
+        RDG.state.user.id,
+      companyId:
+        RDG.state.company.id,
+      games:
+        RDG.state.game.games.length,
+      currentGame:
+        current,
+      normalizedCurrent:
+        current
+          ? this.normalize(current)
+          : null,
+      game300Loaded:
+        !!window.Game300,
+      startSelectedGameAvailable:
+        typeof window.startSelectedGame === 'function'
+    };
+
+    console.table(result);
+
+    return result;
+  }
+};
+
+
+/* ============================================================
+   GAME LAUNCH COMPATIBILITY FUNCTIONS
+   ============================================================ */
+
+window.RDGOpenGame = function(game) {
+  return RDG.gameLaunch.open(game);
+};
+
+window.RDGOpenGameById = function(gameId) {
+  return RDG.gameLaunch.openById(gameId);
+};
+
+window.RDGOpenCurrentGame = function() {
+  return RDG.gameLaunch.openCurrentGame();
+};
+
+window.RDGSelectGame = function(game) {
+  return RDG.gameLaunch.select(game);
+};
+
+window.RDGGameLaunchDebug = function() {
+  return RDG.gameLaunch.debug();
+};
+
+
+/* ============================================================
+   END RDGScript.html v4.0.3
+   ============================================================ */
